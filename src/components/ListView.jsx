@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import useStore from '../store/useStore'
+import useStore, { applySort } from '../store/useStore'
 
 const STATUS_ORDER = ['not_started', 'working', 'finished', 'discarded']
 const STATUS_LABEL = {
@@ -14,6 +14,14 @@ const STATUS_COLOR = {
   finished:    '#2a9d5c',
   discarded:   '#999',
 }
+
+const SORT_OPTIONS = [
+  { v: 'custom',       l: '⠿ Custom order' },
+  { v: 'alpha',        l: 'A → Z' },
+  { v: 'alpha_desc',   l: 'Z → A' },
+  { v: 'created',      l: 'Oldest first' },
+  { v: 'created_desc', l: 'Newest first' },
+]
 
 function timeAgo(ts) {
   const sec = Math.floor((Date.now() - ts) / 1000)
@@ -42,12 +50,20 @@ export default function ListView() {
   const bulkUpdateTasks = useStore(s => s.bulkUpdateTasks)
   const bulkDeleteTasks = useStore(s => s.bulkDeleteTasks)
   const addTask         = useStore(s => s.addTask)
+  const sorts           = useStore(s => s.sorts)
+  const setSortPref     = useStore(s => s.setSortPref)
+  const reorderTasks    = useStore(s => s.reorderTasks)
 
   const [selected, setSelected]           = useState(new Set())
   const [editingId, setEditingId]         = useState(null)
   const [editText, setEditText]           = useState('')
   const [newTaskText, setNewTaskText]     = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
+
+  // Drag-to-reorder state
+  const [dragItemId,  setDragItemId]  = useState(null)
+  const [dragOverId,  setDragOverId]  = useState(null)
+  const [dragAbove,   setDragAbove]   = useState(true)   // true = insert above target
 
   function toggleSelect(id) {
     const next = new Set(selected)
@@ -100,6 +116,45 @@ export default function ListView() {
     setNewTaskText('')
   }
 
+  // ── Drag-to-reorder handlers ──────────────────────────────────────────────
+  function handleDragStart(e, id) {
+    setDragItemId(id)
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', id)
+  }
+
+  function handleDragOver(e, id) {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    const rect = e.currentTarget.getBoundingClientRect()
+    setDragOverId(id)
+    setDragAbove(e.clientY < rect.top + rect.height / 2)
+  }
+
+  function handleDrop(e, targetId, sortedGroupTasks, sectionStatus) {
+    e.preventDefault()
+    if (!dragItemId || dragItemId === targetId) { clearDrag(); return }
+
+    const fromIdx  = sortedGroupTasks.findIndex(t => t.id === dragItemId)
+    const targetIdx = sortedGroupTasks.findIndex(t => t.id === targetId)
+    if (fromIdx === -1 || targetIdx === -1) { clearDrag(); return }
+
+    const newOrder = [...sortedGroupTasks]
+    const [moved]  = newOrder.splice(fromIdx, 1)
+    let insertAt   = newOrder.findIndex(t => t.id === targetId)
+    if (!dragAbove) insertAt += 1
+    newOrder.splice(insertAt, 0, moved)
+
+    reorderTasks(newOrder.map(t => t.id))
+    setSortPref(sectionStatus, 'custom')
+    clearDrag()
+  }
+
+  function clearDrag() {
+    setDragItemId(null)
+    setDragOverId(null)
+  }
+
   const grouped = STATUS_ORDER.map(status => ({
     status,
     tasks: tasks.filter(t => t.status === status),
@@ -150,9 +205,12 @@ export default function ListView() {
 
       {/* ── Groups ─────────────────────────────────────────────────────────── */}
       {grouped.map(({ status, tasks: groupTasks }) => {
-        const groupIds     = groupTasks.map(t => t.id)
-        const allSelected  = groupIds.length > 0 && groupIds.every(id => selected.has(id))
-        const someSelected = groupIds.some(id => selected.has(id))
+        const sortPref      = sorts?.[status] || 'created'
+        const isCustomSort  = sortPref === 'custom'
+        const sortedTasks   = applySort(groupTasks, sortPref)
+        const groupIds      = groupTasks.map(t => t.id)
+        const allSelected   = groupIds.length > 0 && groupIds.every(id => selected.has(id))
+        const someSelected  = groupIds.some(id => selected.has(id))
 
         return (
           <div key={status} style={styles.group}>
@@ -163,27 +221,59 @@ export default function ListView() {
                 ref={el => { if (el) el.indeterminate = someSelected && !allSelected }}
                 onChange={() => toggleGroupSelect(groupTasks)}
                 disabled={groupTasks.length === 0}
-                title={`Select all in ${STATUS_LABEL[status]}`}
                 style={{ cursor: groupTasks.length > 0 ? 'pointer' : 'default' }}
               />
               <span style={{ ...styles.groupDot, background: STATUS_COLOR[status] }} />
               <span style={{ fontWeight: 700, fontSize: 15, color: '#333' }}>{STATUS_LABEL[status]}</span>
               <span style={styles.groupCount}>{groupTasks.length}</span>
+
+              {/* Sort control */}
+              <select
+                value={sortPref}
+                onChange={e => setSortPref(status, e.target.value)}
+                style={styles.sortSelect}
+              >
+                {SORT_OPTIONS.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+              </select>
             </div>
 
-            {groupTasks.length === 0
+            {sortedTasks.length === 0
               ? <div style={styles.empty}>None</div>
-              : groupTasks.map(task => {
-                  const isFinished = task.status === 'finished' && task.finishedAt
-                  const dateStr = isFinished
+              : sortedTasks.map(task => {
+                  const isFinished   = task.status === 'finished' && task.finishedAt
+                  const dateStr      = isFinished
                     ? new Date(task.finishedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                    : new Date(task.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                  const elapsedStr = isFinished
+                    : new Date(task.createdAt).toLocaleString(undefined,  { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                  const elapsedStr   = isFinished
                     ? `took ${formatDuration(task.finishedAt - task.createdAt)}`
                     : timeAgo(task.createdAt)
 
+                  const isDragOver   = dragOverId === task.id
+                  const rowStyle = {
+                    ...styles.row,
+                    background:   selected.has(task.id) ? '#eef4ff' : '#fff',
+                    borderTop:    isDragOver && dragAbove  ? '2px solid #2E75B6' : '1px solid #f0f0f0',
+                    borderBottom: isDragOver && !dragAbove ? '2px solid #2E75B6' : undefined,
+                    opacity:      dragItemId === task.id   ? 0.45 : 1,
+                  }
+
                   return (
-                    <div key={task.id} style={{ ...styles.row, background: selected.has(task.id) ? '#eef4ff' : '#fff' }}>
+                    <div
+                      key={task.id}
+                      style={rowStyle}
+                      onDragOver={e => handleDragOver(e, task.id)}
+                      onDrop={e => handleDrop(e, task.id, sortedTasks, status)}
+                      onDragLeave={() => setDragOverId(null)}
+                    >
+                      {/* Drag handle — always visible; drop auto-switches to custom */}
+                      <span
+                        draggable
+                        onDragStart={e => handleDragStart(e, task.id)}
+                        onDragEnd={clearDrag}
+                        style={styles.dragHandle}
+                        title="Drag to reorder"
+                      >⠿</span>
+
                       <input type="checkbox" checked={selected.has(task.id)} onChange={() => toggleSelect(task.id)} />
 
                       {editingId === task.id
@@ -247,13 +337,12 @@ function FlagToggle({ value, color, label, onChange }) {
 
 const styles = {
   container: {
-    flex: 1, overflowY: 'auto', padding: '0',
+    flex: 1, overflowY: 'auto', padding: 0,
     fontFamily: '-apple-system, Arial, sans-serif',
   },
   stickyHeader: {
     position: 'sticky', top: 0, zIndex: 10,
-    background: '#fff',
-    padding: '14px 28px 10px',
+    background: '#fff', padding: '14px 28px 10px',
     borderBottom: '1px solid #eee',
     boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
   },
@@ -280,10 +369,19 @@ const styles = {
   },
   groupDot:   { width: 11, height: 11, borderRadius: '50%', display: 'inline-block', flexShrink: 0 },
   groupCount: { fontSize: 12, background: '#eee', borderRadius: 10, padding: '1px 8px', color: '#666' },
+  sortSelect: {
+    marginLeft: 'auto', fontSize: 12, padding: '3px 6px', borderRadius: 6,
+    border: '1px solid #ddd', background: '#fff', cursor: 'pointer',
+    fontFamily: 'inherit', color: '#555',
+  },
   empty:      { fontSize: 13, color: '#bbb', padding: '6px 4px' },
   row: {
     display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px',
-    borderRadius: 8, marginBottom: 4, border: '1px solid #f0f0f0',
+    borderRadius: 8, marginBottom: 4, transition: 'border 0.1s',
+  },
+  dragHandle: {
+    cursor: 'grab', color: '#bbb', fontSize: 16,
+    userSelect: 'none', padding: '0 2px', flexShrink: 0,
   },
   taskText: {
     flex: 1, fontSize: 14, color: '#222', cursor: 'text',

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import useStore, { getAgingScale, DEFAULT_CARD_COLORS } from '../store/useStore'
+import useStore, { getAgingScale, DEFAULT_CARD_COLORS, applySort } from '../store/useStore'
 import TaskEditModal from './TaskEditModal'
 
 // ── Layout constants ──────────────────────────────────────────────────────────
@@ -18,7 +18,7 @@ const CARD_PAD_X     = 14
 const CARD_PAD_Y     = 12
 const LINE_HEIGHT    = 1.45
 const CARD_GAP       = 10
-const BOARD_HEADER_H = 56
+const BOARD_HEADER_H = 76
 const BOARD_INNER    = 12
 const CARD_RADIUS    = 12
 const PROX_BOARD     = 180
@@ -183,9 +183,9 @@ function drawBoard(ctx, bx, by, bw, bh, count, denied, op = 0.95) {
   ctx.fillStyle = denied ? '#e05252' : '#2E75B6'
   ctx.font = 'bold 14px -apple-system, Arial, sans-serif'
   ctx.textAlign = 'center'; ctx.textBaseline = 'top'
-  ctx.fillText('WORKING ON IT', bx + bw / 2, by + 12)
+  ctx.fillText('WORKING ON IT', bx + bw / 2, by + 10)
   ctx.font = '12px -apple-system, Arial, sans-serif'
-  ctx.fillText(denied ? 'NO SPACE' : `${count}`, bx + bw / 2, by + 32)
+  ctx.fillText(denied ? 'NO SPACE' : `${count}`, bx + bw / 2, by + 30)
 }
 
 function drawBin(ctx, x, y, w, h, hover, op = 0.95) {
@@ -238,6 +238,27 @@ function distToRect(px, py, rx, ry, rw, rh) {
   return Math.sqrt(dx * dx + dy * dy)
 }
 
+// Returns where in the vertical stack a dropped card should be inserted
+function getInsertionIndex(cy, pinnedLayout) {
+  for (let i = 0; i < pinnedLayout.length; i++) {
+    if (cy < pinnedLayout[i].cy) return i
+  }
+  return pinnedLayout.length
+}
+
+// Returns the Y pixel position of the insertion indicator line
+function computeInsertionY(insertIdx, pinnedLayout, boardY) {
+  if (pinnedLayout.length === 0) return boardY + BOARD_HEADER_H + BOARD_INNER
+  if (insertIdx === 0) return pinnedLayout[0].cy - pinnedLayout[0].h / 2 - CARD_GAP / 2
+  if (insertIdx >= pinnedLayout.length) {
+    const last = pinnedLayout[pinnedLayout.length - 1]
+    return last.cy + last.h / 2 + CARD_GAP / 2
+  }
+  const above = pinnedLayout[insertIdx - 1]
+  const below = pinnedLayout[insertIdx]
+  return (above.cy + above.h / 2 + below.cy - below.h / 2) / 2
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export default function CanvasView() {
   const canvasRef        = useRef(null)
@@ -262,13 +283,17 @@ export default function CanvasView() {
   const growthSpeed       = useStore(s => s.growthSpeed)
   const canvasBgImage     = useStore(s => s.canvasBgImage)
   const panelOpacity      = useStore(s => s.panelOpacity)
+  const sorts             = useStore(s => s.sorts)
+  const setSortPref       = useStore(s => s.setSortPref)
+  const reorderTasks      = useStore(s => s.reorderTasks)
 
-  const session = sessions.find(s => s.id === activeSessionId)
-  const paused  = session?.paused ?? false
+  const session  = sessions.find(s => s.id === activeSessionId)
+  const paused   = session?.paused   ?? false
+  const pausedAt = session?.pausedAt ?? null
 
   useEffect(() => {
-    stateRef.current = { tasks, paused, cardColors, canvasBg, growthSpeed, panelOpacity }
-  }, [tasks, paused, cardColors, canvasBg, growthSpeed, panelOpacity])
+    stateRef.current = { tasks, paused, pausedAt, cardColors, canvasBg, growthSpeed, panelOpacity, sorts }
+  }, [tasks, paused, pausedAt, cardColors, canvasBg, growthSpeed, panelOpacity, sorts])
 
   // Load bg image into an Image element whenever the data URL changes
   useEffect(() => {
@@ -296,8 +321,10 @@ export default function CanvasView() {
 
     function tick() {
       animRef.current = requestAnimationFrame(tick)
-      const { tasks, paused, cardColors, canvasBg, growthSpeed, panelOpacity } = stateRef.current
+      const { tasks, paused, pausedAt, cardColors, canvasBg, growthSpeed, panelOpacity, sorts } = stateRef.current
       const pOp = panelOpacity ?? 0.95
+      // Freeze aging at the moment of pausing so cards don't grow while paused
+      const now = (paused && pausedAt) ? pausedAt : Date.now()
       const colors = cardColors || DEFAULT_CARD_COLORS
       const drag = dragRef.current
       const W = canvas.width
@@ -330,7 +357,6 @@ export default function CanvasView() {
         ctx.fillStyle = 'rgba(200,200,220,0.18)'; ctx.fillRect(0, 0, W, H)
       }
 
-      const now = Date.now()
       const workingTasks = tasks.filter(t => t.status === 'working')
 
       // ── Hover / denied states ──────────────────────────────────────────────
@@ -363,7 +389,7 @@ export default function CanvasView() {
         if (task.status !== 'not_started') continue
         if (drag?.taskId === task.id) continue
 
-        const scale = getAgingScale(task.lastTouchedAt, now, growthSpeed)
+        const scale = getAgingScale(task.lastTouchedAt, now, growthSpeed || 'medium')
         const { w, h, lines, fontSize } = floatingDims(ctx, task, scale)
         const hw = w / 2, hh = h / 2
 
@@ -389,9 +415,11 @@ export default function CanvasView() {
         floatingLayout.push({ id: task.id, cx: posX, cy: posY, w, h })
       }
 
-      // ── Pinned tasks: draw ────────────────────────────────────────────────
-      const pinLayout    = layoutPinned(ctx, workingTasks, bx, by, bw, bh)
-      const pinnedLayout = []
+      // ── Pinned tasks: draw (sorted) ───────────────────────────────────────
+      const boardSort     = sorts?.board || 'custom'
+      const sortedWorking = applySort(workingTasks, boardSort)
+      const pinLayout     = layoutPinned(ctx, sortedWorking, bx, by, bw, bh)
+      const pinnedLayout  = []
       for (const { task, cx, cy, w, h, lines } of pinLayout) {
         if (drag?.taskId === task.id) continue
         drawPinned(ctx, task, cx, cy, w, h, lines, colors)
@@ -404,6 +432,27 @@ export default function CanvasView() {
         board:    { x: bx, y: by, w: bw, h: bh },
         bin:      { x: binX, y: binY, w: BIN_W,      h: BIN_H,      cx: binCx, cy: binCy },
         finished: { x: finX, y: finY, w: FINISHED_W, h: FINISHED_H, cx: finCx, cy: finCy },
+      }
+
+      // ── Insertion indicator (custom board sort, dragging working card) ────
+      if (drag && boardSort === 'custom') {
+        const dragTask = tasks.find(t => t.id === drag.taskId)
+        if (dragTask?.status === 'working') {
+          const dBoard = distToRect(drag.cx, drag.cy, bx, by, bw, bh)
+          if (dBoard < PROX_BOARD) {
+            const insertIdx = getInsertionIndex(drag.cy, pinnedLayout)
+            const insertY   = computeInsertionY(insertIdx, pinnedLayout, by)
+            ctx.strokeStyle = '#2E75B6'; ctx.lineWidth = 3; ctx.setLineDash([])
+            ctx.beginPath()
+            ctx.moveTo(bx + BOARD_INNER + 4, insertY)
+            ctx.lineTo(bx + bw - BOARD_INNER - 4, insertY)
+            ctx.stroke()
+            ctx.fillStyle = '#2E75B6'
+            ;[bx + BOARD_INNER + 4, bx + bw - BOARD_INNER - 4].forEach(x => {
+              ctx.beginPath(); ctx.arc(x, insertY, 4, 0, Math.PI * 2); ctx.fill()
+            })
+          }
+        }
       }
 
       // ── Dragged card on top ───────────────────────────────────────────────
@@ -531,10 +580,21 @@ export default function CanvasView() {
         velX: (Math.random() - 0.5) * 2, velY: (Math.random() - 0.5) * 2,
         lastTouchedAt: Date.now(),
       })
+    } else if (task.status === 'working' && dBoard < PROX_BOARD) {
+      // Reorder within board — always allowed, auto-switches sort to custom
+      const { sorts: currentSorts } = stateRef.current
+      const workingTasks  = tasks.filter(t => t.status === 'working')
+      const sortedWorking = applySort(workingTasks, currentSorts?.board || 'custom')
+      const others        = sortedWorking.filter(t => t.id !== taskId)
+      const insertIdx     = getInsertionIndex(cy, layoutRef.current.pinned)
+      const newOrder      = [...others]
+      newOrder.splice(insertIdx, 0, task)
+      reorderTasks(newOrder.map(t => t.id))
+      setSortPref('board', 'custom')
     } else {
       updateTask(taskId, { posX: cx, posY: cy })
     }
-  }, [updateTask])
+  }, [updateTask, reorderTasks])
 
   const onContextMenu = useCallback((e) => {
     e.preventDefault()
@@ -565,6 +625,31 @@ export default function CanvasView() {
         onClick={() => setShowCreateModal(true)}
       >
         + Add task
+      </div>
+
+      {/* Board sort control — overlaid on canvas, inside board header area */}
+      <div style={{
+        position: 'absolute', right: BOARD_MARGIN, top: BOARD_MARGIN + 52,
+        width: BOARD_W, display: 'flex', justifyContent: 'center',
+        pointerEvents: 'none', zIndex: 5,
+      }}>
+        <select
+          value={sorts?.board || 'custom'}
+          onChange={e => setSortPref('board', e.target.value)}
+          onMouseDown={e => e.stopPropagation()}
+          style={{
+            pointerEvents: 'auto', fontSize: 11, padding: '2px 6px',
+            borderRadius: 6, border: '1px solid #cce', cursor: 'pointer',
+            background: 'rgba(255,255,255,0.88)', fontFamily: 'inherit',
+            color: '#2E75B6', fontWeight: 600,
+          }}
+        >
+          <option value="custom">⠿ Custom order</option>
+          <option value="alpha">A → Z</option>
+          <option value="alpha_desc">Z → A</option>
+          <option value="created">Oldest first</option>
+          <option value="created_desc">Newest first</option>
+        </select>
       </div>
 
       {editingTask && (

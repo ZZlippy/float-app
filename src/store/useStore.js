@@ -32,6 +32,7 @@ function newTask(sessionId, text, important, urgent) {
     lastTouchedAt: now,
     finishedAt: null,
     colorOverride: null,     // { bg, text, border } | null
+    sortIndex: now,
     posX: Math.random() * 600 + 100,
     posY: Math.random() * 400 + 100,
     velX: (Math.random() - 0.5) * 2,
@@ -72,8 +73,31 @@ export const DEFAULT_CARD_COLORS = {
   critical:  { bg: '#E05252', text: '#ffffff', border: '#a02020' },
 }
 
-export const DEFAULT_CANVAS_BG   = '#fafafa'
+export const DEFAULT_CANVAS_BG    = '#fafafa'
 export const DEFAULT_GROWTH_SPEED = 'medium'
+
+export const DEFAULT_SORTS = {
+  board:       'custom',
+  not_started: 'created',
+  working:     'created',
+  finished:    'created',
+  discarded:   'created',
+}
+
+// ── Sort helper ───────────────────────────────────────────────────────────────
+export function applySort(tasks, sortBy) {
+  const arr = [...tasks]
+  switch (sortBy) {
+    case 'alpha':         return arr.sort((a, b) => a.text.localeCompare(b.text))
+    case 'alpha_desc':    return arr.sort((a, b) => b.text.localeCompare(a.text))
+    case 'created':       return arr.sort((a, b) => a.createdAt - b.createdAt)
+    case 'created_desc':  return arr.sort((a, b) => b.createdAt - a.createdAt)
+    case 'elapsed':       return arr.sort((a, b) => a.lastTouchedAt - b.lastTouchedAt)
+    case 'elapsed_desc':  return arr.sort((a, b) => b.lastTouchedAt - a.lastTouchedAt)
+    case 'custom':        return arr.sort((a, b) => (a.sortIndex ?? a.createdAt) - (b.sortIndex ?? b.createdAt))
+    default:              return arr
+  }
+}
 
 // ── Duplicate detection ───────────────────────────────────────────────────────
 
@@ -124,6 +148,7 @@ const useStore = create((set, get) => ({
   growthSpeed:   DEFAULT_GROWTH_SPEED,
   canvasBgImage: null,
   panelOpacity:  0.95,
+  sorts:         DEFAULT_SORTS,
 
   // ── Boot ───────────────────────────────────────────────────────────────────
   boot: async () => {
@@ -147,8 +172,9 @@ const useStore = create((set, get) => ({
     const growthSpeed   = await getSetting('growthSpeed')   || DEFAULT_GROWTH_SPEED
     const canvasBgImage = await getSetting('canvasBgImage') || null
     const panelOpacity  = await getSetting('panelOpacity')  ?? 0.95
+    const sorts         = await getSetting('sorts')         || DEFAULT_SORTS
 
-    set({ sessions, activeSessionId: activeId, tasks, loaded: true, cardColors, canvasBg, growthSpeed, canvasBgImage, panelOpacity })
+    set({ sessions, activeSessionId: activeId, tasks, loaded: true, cardColors, canvasBg, growthSpeed, canvasBgImage, panelOpacity, sorts })
   },
 
   // ── Session actions ────────────────────────────────────────────────────────
@@ -292,6 +318,7 @@ const useStore = create((set, get) => ({
       lastTouchedAt: now,
       finishedAt: null,
       colorOverride: null,
+      sortIndex: now,
       posX: Math.random() * 600 + 100,
       posY: Math.random() * 400 + 100,
       velX: (Math.random() - 0.5) * 2,
@@ -325,6 +352,25 @@ const useStore = create((set, get) => ({
   setPanelOpacity: async (opacity) => {
     await setSetting('panelOpacity', opacity)
     set({ panelOpacity: opacity })
+  },
+
+  setSortPref: async (key, value) => {
+    const { sorts } = get()
+    const updated = { ...sorts, [key]: value }
+    await setSetting('sorts', updated)
+    set({ sorts: updated })
+  },
+
+  reorderTasks: async (ids) => {
+    const { tasks } = get()
+    const now = Date.now()
+    const updated = tasks.map(t => {
+      const idx = ids.indexOf(t.id)
+      if (idx === -1) return t
+      return { ...t, sortIndex: idx * 1000, updatedAt: now }
+    })
+    await saveTasksBatch(updated.filter(t => ids.includes(t.id)))
+    set({ tasks: updated })
   },
 
   // ── UI toggles ─────────────────────────────────────────────────────────────
