@@ -149,6 +149,7 @@ const useStore = create((set, get) => ({
   canvasBgImage: null,
   panelOpacity:  0.95,
   sorts:         DEFAULT_SORTS,
+  soundVolume:   0.5,
 
   // ── Boot ───────────────────────────────────────────────────────────────────
   boot: async () => {
@@ -173,8 +174,9 @@ const useStore = create((set, get) => ({
     const canvasBgImage = await getSetting('canvasBgImage') || null
     const panelOpacity  = await getSetting('panelOpacity')  ?? 0.95
     const sorts         = await getSetting('sorts')         || DEFAULT_SORTS
+    const soundVolume   = await getSetting('soundVolume')   ?? 0.5
 
-    set({ sessions, activeSessionId: activeId, tasks, loaded: true, cardColors, canvasBg, growthSpeed, canvasBgImage, panelOpacity, sorts })
+    set({ sessions, activeSessionId: activeId, tasks, loaded: true, cardColors, canvasBg, growthSpeed, canvasBgImage, panelOpacity, sorts, soundVolume })
   },
 
   // ── Session actions ────────────────────────────────────────────────────────
@@ -352,6 +354,11 @@ const useStore = create((set, get) => ({
   setPanelOpacity: async (opacity) => {
     await setSetting('panelOpacity', opacity)
     set({ panelOpacity: opacity })
+  },
+
+  setSoundVolume: async (vol) => {
+    await setSetting('soundVolume', vol)
+    set({ soundVolume: vol })
   },
 
   setSortPref: async (key, value) => {

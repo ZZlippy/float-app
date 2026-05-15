@@ -286,14 +286,51 @@ export default function CanvasView() {
   const sorts             = useStore(s => s.sorts)
   const setSortPref       = useStore(s => s.setSortPref)
   const reorderTasks      = useStore(s => s.reorderTasks)
+  const soundVolume       = useStore(s => s.soundVolume)
 
   const session  = sessions.find(s => s.id === activeSessionId)
   const paused   = session?.paused   ?? false
   const pausedAt = session?.pausedAt ?? null
 
   useEffect(() => {
-    stateRef.current = { tasks, paused, pausedAt, cardColors, canvasBg, growthSpeed, panelOpacity, sorts }
-  }, [tasks, paused, pausedAt, cardColors, canvasBg, growthSpeed, panelOpacity, sorts])
+    stateRef.current = { tasks, paused, pausedAt, cardColors, canvasBg, growthSpeed, panelOpacity, sorts, soundVolume }
+  }, [tasks, paused, pausedAt, cardColors, canvasBg, growthSpeed, panelOpacity, sorts, soundVolume])
+
+  // ── Audio ──────────────────────────────────────────────────────────────────
+  const audioCtxRef  = useRef(null)
+  const pitchIdxRef  = useRef(0)
+
+  // C-major pentatonic frequencies (C4 → C5)
+  const PITCHES = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25]
+
+  const playBounce = useCallback(() => {
+    const vol = stateRef.current.soundVolume ?? 0.5
+    if (vol <= 0) return
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
+      }
+      const ctx  = audioCtxRef.current
+      const freq = PITCHES[pitchIdxRef.current % PITCHES.length]
+      pitchIdxRef.current++
+
+      const osc  = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+
+      osc.type = 'sine'
+      osc.frequency.value = freq
+
+      const t = ctx.currentTime
+      gain.gain.setValueAtTime(0, t)
+      gain.gain.linearRampToValueAtTime(vol * 0.14, t + 0.005)
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.12)
+
+      osc.start(t)
+      osc.stop(t + 0.13)
+    } catch (_) { /* AudioContext blocked — ignore */ }
+  }, []) // eslint-disable-line
 
   // Load bg image into an Image element whenever the data URL changes
   useEffect(() => {
@@ -399,10 +436,12 @@ export default function CanvasView() {
           posX += velX; posY += velY
 
           const rightBound = W - BOARD_W - BOARD_MARGIN - 10
-          if (posX - hw < 0)          { posX = hw;              velX =  Math.abs(velX) }
-          if (posX + hw > rightBound) { posX = rightBound - hw; velX = -Math.abs(velX) }
-          if (posY - hh < 0)          { posY = hh;              velY =  Math.abs(velY) }
-          if (posY + hh > H)          { posY = H - hh;          velY = -Math.abs(velY) }
+          let bounced = false
+          if (posX - hw < 0)          { posX = hw;              velX =  Math.abs(velX); bounced = true }
+          if (posX + hw > rightBound) { posX = rightBound - hw; velX = -Math.abs(velX); bounced = true }
+          if (posY - hh < 0)          { posY = hh;              velY =  Math.abs(velY); bounced = true }
+          if (posY + hh > H)          { posY = H - hh;          velY = -Math.abs(velY); bounced = true }
+          if (bounced) playBounce()
 
           const speed = Math.sqrt(velX * velX + velY * velY)
           if (speed > 2.5)    { velX *= 2.5 / speed; velY *= 2.5 / speed }

@@ -26,6 +26,8 @@ export default function SettingsPanel({ onClose }) {
   const setCanvasBgImage = useStore(s => s.setCanvasBgImage)
   const panelOpacity     = useStore(s => s.panelOpacity)
   const setPanelOpacity  = useStore(s => s.setPanelOpacity)
+  const soundVolume      = useStore(s => s.soundVolume)
+  const setSoundVolume   = useStore(s => s.setSoundVolume)
 
   const imgInputRef = useRef(null)
 
@@ -76,6 +78,7 @@ export default function SettingsPanel({ onClose }) {
     setLocalSpeed(DEFAULT_GROWTH_SPEED); setGrowthSpeed(DEFAULT_GROWTH_SPEED)
     setCanvasBgImage(null)
     setPanelOpacity(0.95)
+    setSoundVolume(0.5)
   }
 
   return (
@@ -174,6 +177,27 @@ export default function SettingsPanel({ onClose }) {
               />
               <span style={{ fontSize: 12, color: '#888', width: 34, textAlign: 'right', fontFamily: 'monospace' }}>
                 {Math.round((panelOpacity ?? 0.95) * 100)}%
+              </span>
+            </div>
+          </div>
+
+          <div style={styles.divider} />
+
+          {/* ── Sound ────────────────────────────────────────────────────── */}
+          <div style={styles.section}>
+            <div style={styles.sectionTitle}>Bounce Sound</div>
+            <div style={styles.sectionDesc}>Volume for bounce sounds when cards hit the canvas edges.</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={styles.colorLabel}>Volume</span>
+              <input
+                type="range"
+                min={0} max={1} step={0.01}
+                value={soundVolume ?? 0.5}
+                onChange={e => setSoundVolume(Number(e.target.value))}
+                style={{ flex: 1, cursor: 'pointer' }}
+              />
+              <span style={{ fontSize: 12, color: '#888', width: 34, textAlign: 'right', fontFamily: 'monospace' }}>
+                {soundVolume <= 0 ? 'Off' : `${Math.round((soundVolume ?? 0.5) * 100)}%`}
               </span>
             </div>
           </div>
